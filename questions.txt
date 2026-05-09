@@ -1,0 +1,62 @@
+BucketHeap Interview Questions
+==============================
+
+ALGORITHMS & SEARCH
+-------------------
+1. What is the difference between A*, Weighted A*, Anytime A*, and ANA*? When would you choose each?
+
+2. ANA* calls rebuild() every time it finds a new incumbent solution. Why? What breaks if you skip it?
+
+3. What is the priority function E(n) = (G_upper - g(n)) / h(n) in ANA*, and what does maximizing it mean intuitively?
+
+4. Dynamic Potential Search uses a focal list. How does it differ from ANA* in how it balances optimality vs. speed?
+
+5. What does "bounded suboptimal" mean? If alpha=1.5, what guarantee does the solution carry?
+
+6. How does the stale-pop strategy work, and why use it instead of decrease-key?
+
+DATA STRUCTURES & DESIGN
+------------------------
+7. Walk me through the two-level bucket queue. What does the primary bucket index represent? The secondary?
+
+8. Why does BucketHeap combine a TwoLevelBucketQueue with an IndexedDAryHeap rather than using either alone?
+
+9. What are the alpha and beta parameters in BucketHeap? How do they aggregate bucket indices?
+
+10. Why store node IDs as uint32_t indices into a pool rather than raw pointers? What are the tradeoffs?
+
+11. BlockPool allocates fixed 512-byte blocks holding 126 node IDs each. Why that size? What alignment property does it exploit?
+
+12. NodePool uses per-search iteration counters instead of clearing arrays between searches. What problem does this solve, and what is the complexity difference?
+
+13. LIFO ordering is used within secondary buckets. Why LIFO instead of FIFO, and what search behavior does it encourage?
+
+MEMORY & CACHE
+--------------
+14. Binary heap has O(log n) push/pop with good asymptotic complexity. Why does it lose to bucket structures on cache metrics in practice?
+
+15. How does the two-level bucket structure affect LLC miss rate compared to a binary heap? What access pattern causes this?
+
+16. When does the bucket approach cause MORE cache pressure than a heap, and under what conditions does that flip?
+
+17. Minor page faults vs. major page faults — what is the difference, and which one dominates during a typical search run in this repo?
+
+18. What is IPC (instructions per cycle), and what does a low IPC during ANA*'s rebuild() tell you about the bottleneck?
+
+19. Why would TLB misses be a concern as BlockPool grows, and what hardware mechanism causes them?
+
+IMPLEMENTATION & SYSTEMS
+------------------------
+20. You use perf_event_open directly instead of calling perf stat. What does this give you that the CLI tool does not?
+
+21. The build uses -O3 -march=native -flto. What does each flag do, and what profiling concern does -fno-omit-frame-pointer address?
+
+22. The codebase uses C++20 in CMakeLists but no C++20 features. If you dropped to C++17, what would change?
+
+23. How does the PriorityCalculator template parameter decouple priority logic from the bucket heap data structure?
+
+24. You have environments for Grid, Sliding Tile, Pancake, and MSA. What property must every environment expose for the algorithm templates to work?
+
+TRADEOFFS & BROADER CONTEXT
+----------------------------
+25. The paper this extends targets bounded-suboptimal and anytime search specifically. Why are bucket-based structures a better fit for these algorithms than for plain A*?
