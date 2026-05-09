@@ -1,0 +1,221 @@
+BucketHeap Interview Answers
+==============================
+
+ALGORITHMS & SEARCH
+-------------------
+
+Q1. What is the difference between A*, Weighted A*, Anytime A*, and ANA*? When would you choose each?
+
+A: A* finds optimal solutions using f = g + h. Weighted A* uses f = g + w*h, inflating the heuristic to expand fewer nodes — finds a solution w times suboptimal, faster.
+   Anytime A* iterates: runs weighted A* with decreasing w until time runs out, returning the best solution found so far. Good when you have a deadline.
+   ANA* (Anytime Nonparametric A*) avoids picking w manually — it uses priority E(n) = (G_upper - g) / h, which automatically focuses on nodes most likely to improve the incumbent. As the solution improves, priorities update via rebuild().
+
+   Choose A* for guaranteed optimal. WA* when you know your suboptimality budget. ANA* when you want anytime behavior without tuning a weight.
+
+   Alt: Think of ANA* as WA* where the implicit weight tightens itself automatically every time you find a better solution.
+
+---
+
+Q2. ANA* calls rebuild() every time it finds a new incumbent solution. Why? What breaks if you skip it?
+
+A: E(n) = (G_upper - g) / h. When G_upper drops (better solution found), every node's priority changes — nodes that were high-priority may now be irrelevant, and vice versa. The queue ordering is globally invalidated.
+   Without rebuild(), you expand nodes in stale priority order. You may miss the optimal path because a node with now-high E(n) sits buried behind nodes with now-low E(n). Correctness holds but solution quality degrades — you lose the anytime convergence guarantee.
+   This is the primary motivation for bucket-based structures in this repo: rebuild() on a binary heap is O(n log n); on a bucket structure it can be done in O(n) by iterating all nodes and reinserting.
+
+---
+
+Q3. What is the priority function E(n) = (G_upper - g(n)) / h(n), and what does maximizing it mean intuitively?
+
+A: E(n) measures expected improvement per unit of remaining work. G_upper - g(n) is how much cost "slack" a path through n has before it can't beat the incumbent. Dividing by h(n) normalizes by how far n is from the goal.
+   Maximizing E(n) means: expand nodes most likely to reach the goal with significant improvement, relative to how much work remains. When G_upper tightens, nodes with small slack drop in priority automatically — no manual weight tuning needed.
+
+   Alt: It's a greedy bang-for-buck ratio. High E = big potential gain, close to goal. Low E = little room to improve or far away.
+
+---
+
+Q4. Dynamic Potential Search uses a focal list. How does it differ from ANA* in how it balances optimality vs. speed?
+
+A: DPS maintains two lists: OPEN (all nodes, ordered by f) and FOCAL (nodes within w * f_min, ordered by potential). It always expands from FOCAL, guaranteeing w-suboptimality while greedily picking the node with highest potential within the bound.
+   ANA* has no explicit suboptimality bound — it pursues best E(n) globally and tightens over time. DPS gives a hard guarantee at each expansion. ANA* gives a guarantee only on solution cost at termination.
+   DPS is better when you need a certifiable bound on the first solution. ANA* is better for pure anytime convergence without a fixed w.
+
+---
+
+Q5. What does "bounded suboptimal" mean? If alpha=1.5, what guarantee does the solution carry?
+
+A: Bounded suboptimal means the returned solution cost is at most w times the optimal cost. With w=1.5, the solution is guaranteed to cost no more than 1.5 * OPT.
+   In this repo, alpha/beta are bucket aggregation parameters, not suboptimality bounds — they control bucket granularity. The suboptimality bound is set separately (focal_w for DPS, or implicit via ANA*'s convergence). Don't conflate the two.
+
+---
+
+Q6. How does the stale-pop strategy work, and why use it instead of decrease-key?
+
+A: When a node's g-cost improves, instead of finding and updating its position in the queue (decrease-key), we push a new entry with the better priority and leave the old one. On pop, we check if the node is already closed — if so, discard (stale pop).
+   Decrease-key requires O(1) index lookup into the heap and O(log n) reheapification for a binary heap. For bucket queues, there's no natural decrease-key — the node could be in any secondary bucket. Stale-pop avoids this entirely at the cost of extra queue entries and some wasted dequeue work.
+   It works well here because bucket operations are cheap and the closed-check is O(1) via the NodePool iteration counter.
+
+---
+
+DATA STRUCTURES & DESIGN
+------------------------
+
+Q7. Walk me through the two-level bucket queue. What does the primary bucket index represent? The secondary?
+
+A: Primary buckets are indexed by floor(f / beta) where f = g + h. Each primary bucket contains secondary buckets indexed by floor(h / alpha). Nodes are stored in the secondary bucket matching their (f, h) pair.
+   Pop finds the minimum occupied primary bucket (f_min), then the minimum occupied secondary bucket within it (h_min), and returns the top node — LIFO within the secondary bucket.
+   This gives O(1) push and O(1) pop when f_min doesn't need scanning, making it fast for integer costs where f values are dense.
+
+---
+
+Q8. Why does BucketHeap combine a TwoLevelBucketQueue with an IndexedDAryHeap rather than using either alone?
+
+A: TwoLevelBucketQueue stores nodes efficiently and provides O(1) push, but finding f_min requires scanning primary buckets — expensive when f values are sparse or after rebuild() invalidates the min pointer.
+   IndexedDAryHeap tracks which f-buckets are occupied as a heap of bucket keys, giving O(log n) f_min lookup and O(1) decrease-key via an id→index map.
+   BucketHeap uses the d-ary heap purely for bucket tracking, not per-node priority — so the heap size is proportional to distinct f-values, not node count. This makes rebuild() fast: reprioritize bucket keys, not individual nodes.
+
+---
+
+Q9. What are the alpha and beta parameters in BucketHeap? How do they aggregate bucket indices?
+
+A: Beta aggregates primary (f) buckets: node with cost f lands in bucket floor(f / beta). Alpha aggregates secondary (h) buckets: node with cost h lands in bucket floor(h / alpha).
+   With alpha=beta=1 (default), each integer cost gets its own bucket — maximum resolution. Increasing them reduces bucket count, which helps when f values are sparse or very large (e.g., MSA with high costs), but coarsens priority ordering within aggregated buckets.
+   Tradeoff: fewer buckets = faster min-scan, less memory, but nodes in the same bucket are treated as equal priority even if their true costs differ.
+
+---
+
+Q10. Why store node IDs as uint32_t indices into a pool rather than raw pointers? What are the tradeoffs?
+
+A: Indices are 4 bytes vs 8 bytes for pointers on 64-bit systems. Halves the memory used in bucket storage (Block holds 126 IDs vs ~63 pointers in the same 512 bytes).
+   Indices also make the pool self-contained — no address-space dependency, easier serialization, and the pool can resize (realloc) without invalidating stored references since indices remain valid.
+   Tradeoff: requires an extra indirection through the pool base pointer on access. In practice this is negligible since the pool arrays are accessed sequentially and stay hot in cache.
+
+---
+
+Q11. BlockPool allocates fixed 512-byte blocks holding 126 node IDs each. Why that size? What alignment property does it exploit?
+
+A: 512 bytes matches a common cache line multiple (8 × 64-byte cache lines). Filling a block means filling exactly 8 cache lines — fetching a block cold costs 8 cache line loads, predictable and tight.
+   126 × 4 bytes = 504 bytes for elements + 8 bytes for the next pointer = 512 bytes exactly. No padding waste.
+   Blocks are allocated from a slab (chunk of 1000 at a time) so successive blocks are contiguous in memory — good spatial locality when iterating for rebuild().
+
+---
+
+Q12. NodePool uses per-search iteration counters instead of clearing arrays between searches. Why?
+
+A: Clearing a pool of millions of entries between searches costs O(n) time and touches all memory, thrashing cache before the search even starts.
+   Instead, each search increments a generation counter. is_generated(id) and is_closed(id) compare the stored generation tag against the current counter — O(1) check, zero clearing cost.
+   For benchmarks running hundreds of instances, this matters: clearing a 10M-node pool per instance would dominate total runtime.
+
+---
+
+Q13. LIFO ordering is used within secondary buckets. Why LIFO instead of FIFO?
+
+A: LIFO (stack) gives better cache behavior — recently pushed nodes are at the top, their data likely still warm in cache. FIFO would access the oldest (coldest) nodes first.
+   For search, LIFO within equal-priority buckets encourages depth-first behavior within a f-level, which tends to find solutions faster in practice for many domains.
+   Implementation advantage: stack push/pop is O(1) with no pointer chasing — just increment/decrement an index into the current Block.
+
+---
+
+MEMORY & CACHE
+--------------
+
+Q14. Binary heap has O(log n) push/pop. Why does it lose to bucket structures on cache metrics in practice?
+
+A: Binary heap's sift-up/sift-down accesses parent/child nodes at indices i, i/2, 2i, 2i+1. For large heaps these are random accesses across the entire heap array — high LLC miss rate.
+   Bucket push is a single array index write (O(1), usually cache-warm since recent pushes land nearby). Bucket pop reads the top of a small stack. Working set is localized to the active bucket region, not spread across a large heap array.
+
+   Alt: Heap has great asymptotic complexity but terrible memory access pattern. Buckets trade asymptotic guarantees for spatial locality.
+
+---
+
+Q15. How does the two-level bucket structure affect LLC miss rate vs a binary heap?
+
+A: In measured results, bucket structures show lower LLC miss rates when the open list is large and f values are dense. The active region (current f_min bucket and its secondary buckets) fits in L2/LLC, so most pushes and pops hit cache.
+   Binary heap with 1M+ nodes has working set >> LLC. Every sift operation risks a cache miss.
+   Exception: sparse f distributions (few distinct values, many nodes per bucket) can cause bucket structures to also thrash if the active secondary bucket is large and nodes within it are cold.
+
+---
+
+Q16. When does the bucket approach cause MORE cache pressure than a heap?
+
+A: When the problem has very sparse integer costs (large f range, few nodes) — bucket array is mostly empty, scanning for f_min touches many cold cache lines.
+   Also during rebuild() in ANA*: all nodes across all buckets must be touched to recompute priorities. For a large open list, this is a full memory scan — likely worse than rebuilding a binary heap since bucket memory is less dense.
+   This is why BucketHeap uses the IndexedDAryHeap to track only occupied buckets, reducing rebuild scan cost.
+
+---
+
+Q17. Minor page faults vs. major page faults — difference, and which dominates here?
+
+A: Minor fault: page exists in physical memory but not yet mapped for this process (e.g., first access after malloc). OS maps it — no disk I/O, cheap (~microseconds).
+   Major fault: page must be loaded from disk. Expensive (~milliseconds). Indicates working set exceeds physical RAM.
+   In this repo, minor faults dominate — NodePool and BlockPool pre-allocate large contiguous regions, triggering minor faults on first touch. Major faults should be near-zero unless running on a memory-constrained machine. High minor fault count is expected and normal.
+
+---
+
+Q18. What is IPC, and what does low IPC during ANA*'s rebuild() tell you?
+
+A: IPC = instructions retired per clock cycle. Modern CPUs can issue 3-5 instructions/cycle when execution units are busy. Low IPC (< 1.0) means the CPU is stalling — waiting on memory, branch misprediction, or data dependency.
+   Low IPC during rebuild() specifically means memory-bound: the CPU is issuing loads across a large working set (all open nodes), waiting for cache lines to arrive from LLC or DRAM. No amount of algorithmic optimization helps — the bottleneck is memory bandwidth.
+   Fix direction: reduce node size, improve spatial locality, or accept the cost as fundamental to global reprioritization.
+
+---
+
+Q19. Why would TLB misses be a concern as BlockPool grows?
+
+A: TLB (Translation Lookaside Buffer) caches virtual→physical page mappings. Typical TLB covers 512–1024 pages × 4KB = 2–4MB of address space.
+   BlockPool grows by allocating large chunks. Once it spans many pages and access patterns jump between blocks (e.g., following linked block chains during rebuild), TLB entries evict each other — each access requires a page table walk (~100 cycles).
+   Mitigation: huge pages (2MB instead of 4KB) — 512× fewer TLB entries needed for same memory. Can enable with madvise(MADV_HUGEPAGE) on Linux.
+
+---
+
+IMPLEMENTATION & SYSTEMS
+------------------------
+
+Q20. You use perf_event_open directly instead of perf stat. What does this give you?
+
+A: perf stat measures the entire process lifetime. perf_event_open with PERF_EVENT_IOC_RESET/ENABLE/DISABLE lets you bracket individual solve() calls — measure only the search, excluding startup, I/O, and output.
+   Also allows per-algorithm-per-instance attribution in the same process run. perf stat can't distinguish which algorithm generated which cache misses when running a benchmark suite.
+   Degrades gracefully: if perf_event_open fails (paranoid setting, container), the code falls back silently — available flag controls output.
+
+---
+
+Q21. The build uses -O3 -march=native -flto. What does each flag do, and why -fno-omit-frame-pointer?
+
+A: -O3: aggressive optimization — vectorization, loop unrolling, inlining. -march=native: emit instructions for the exact CPU running the build (AVX2, etc.) — not portable but maximally fast.
+   -flto: link-time optimization — inlines across translation units, eliminates dead code that single-TU compilation can't see. Critical for template-heavy code where the algorithm and queue implementations are in different headers.
+   -fno-omit-frame-pointer: keeps the frame pointer register (rbp) available. Required for perf/Valgrind to unwind call stacks correctly. Without it, flamegraphs show broken stack traces.
+
+---
+
+Q22. The codebase uses C++20 in CMakeLists but no C++20 features. If you dropped to C++17, what would change?
+
+A: Nothing functional. No concepts, no ranges, no coroutines, no std::span, no designated initializers. The if constexpr and structured bindings used are C++17. phmap (parallel_hashmap) is also C++17-compatible.
+   The standard could be dropped to c++17 with no code changes. C++20 was set early in the project and never exploited.
+
+---
+
+Q23. How does the PriorityCalculator template parameter decouple priority logic from the bucket heap?
+
+A: BucketHeap<PriorityCalculator> stores the calculator as a member and calls it on push to compute the priority key injected into the IndexedDAryHeap. The data structure itself is agnostic to what f/h mean.
+   For A* the calculator returns f = g + h. For ANA* it stores G_upper and returns E(n) = (G_upper - g) / h. The same BucketHeap instantiation handles both — only the calculator differs.
+   Without this, you'd need separate bucket heap subclasses per algorithm, or runtime function pointers (slower). Template injection gives zero-cost abstraction — the calculator call inlines away.
+
+---
+
+Q24. What property must every environment expose for the algorithm templates to work?
+
+A: The implicit interface: reset_search(), get_start_node(), get_heuristic(id), get_successors(id, neighbors), get_edge_cost(u, v), is_goal(id), get_pool() returning a NodePool&.
+   No base class or concept enforces this — it's duck-typed via templates. If a method is missing, you get a compiler error at instantiation. This is standard C++17 template programming; C++20 concepts would make the error messages cleaner but aren't used here.
+
+---
+
+TRADEOFFS & BROADER CONTEXT
+----------------------------
+
+Q25. Why are bucket-based structures a better fit for bounded-suboptimal and anytime search than plain A*?
+
+A: Three reasons:
+   1. rebuild() requirement: ANA* must globally reprioritize the open list on every solution improvement. Binary heap rebuild is O(n log n); bucket rebuild is O(n) — scan all nodes, reinsert. This is the central motivation.
+   2. Integer costs: bounded-suboptimal search domains (grid, sliding tile, pancake) typically have small integer costs. Bucket indexing by integer f/h is O(1) vs O(log n) heap operations — favorable for dense cost distributions.
+   3. Suboptimal search expands more nodes per unit time than optimal search (less pruning), so queue operation throughput matters more. The constant-factor advantage of O(1) bucket ops compounds over millions of expansions.
+
+   Plain A* with a binary heap is near-optimal for single optimal searches on moderate-size problems. The bucket advantage emerges at scale and under anytime/rebuild pressure.
